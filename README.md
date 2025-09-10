@@ -51,6 +51,6 @@ The Smile SketchBot uses a Raspberry Pi and OpenCV to detect smiles in real time
 ```mermaid
 flowchart LR
   Cam[Camera Input] --> Pi[Raspberry Pi + Python]
-  Pi -->|Smile Detection + Canny Edges| Process[Processing 4]
-  Process -->|G-code| Printer[Ender 3 V2 (Pen Holder)]
+  Pi -->|"Smile detection + Canny edges"| Proc[Processing 4]
+  Proc -->|"G-code"| Printer[Ender 3 V2 / Pen Holder]
   Printer --> Output[Whiteboard Drawing]
