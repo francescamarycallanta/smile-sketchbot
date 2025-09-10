@@ -1,0 +1,151 @@
+// Use PDF export if needed (not used in this sketch)
+import processing.pdf.*;
+
+// ---------- GLOBALS ----------
+PImage src;                // the face image we will sample
+PrintWriter output;        // writer for the G-code file we generate
+int cellWidth  = 5;        // width of each grid cell (px)
+int cellHeight = 5;        // height of each grid cell (px)
+int columns, rows;         // number of cells in the grid
+boolean penUp = true;      // whether the pen is currently "up" (rapid moves)
+
+// ---------- SETUP: runs once ----------
+void setup() {
+  size(220, 220);  // canvas is 220x220 px (matches your crop + printer area)
+
+  // Load the processed face image (update this path to your actual PNG)
+  src = loadImage("/home/pi/Documents/detected_face.png");
+
+  background(255); // white background
+
+  // Compute grid dimensions from canvas size and cell size
+  rows    = height / cellHeight;
+  columns = width  / cellWidth;
+
+  // Convert source image to grayscale (makes brightness sampling easier)
+  src.filter(GRAY);
+
+  // Create G-code output file (update path as needed)
+  output = createWriter("/home/calla/Documents/face_detection.gcode");
+
+  // We draw a single frame (no animation)
+  noLoop();
+}
+
+// ---------- DRAW: runs once (because noLoop) ----------
+void draw() {
+  drawImage();             // generate stroke instructions for every grid cell
+
+  // After drawing, move pen/carriage to origin (safe parking)
+  output.println("G00 X0 Y0");
+
+  // Ensure the file is written and close it
+  output.flush();
+  output.close();
+}
+
+// ---------- Turn image into strokes (by grid) ----------
+void drawImage() {
+  // For each row of cells...
+  for (int row = 0; row < rows; row++) {
+    penUp = true;  // start each row with pen up (so first move is rapid)
+
+    // For each column in this row...
+    for (int col = 0; col < columns; col++) {
+      // Sample average brightness of this cell (0..255)
+      float value = averageValue(col, row);
+
+      // Map brightness to stroke parameters (darker -> more ink/waves)
+      // value in [0,256] → mapped to [0,16], inverted (dark=high number)
+      int level = 15 - int(map(value, 0, 256, 0, 16));
+
+      // Draw a pattern for this cell (here: sinewaves)
+      drawPattern(col, row, level);
+    }
+  }
+}
+
+// ---------- Average brightness of one grid cell ----------
+float averageValue(int col, int row) {
+  float sum = 0;
+  int x = col * cellWidth;     // top-left x of the cell
+  int y = row * cellHeight;    // top-left y of the cell
+  int count = 0;
+
+  // Accumulate brightness across the cell’s pixels
+  for (int j = 0; j < cellHeight; j++) {
+    for (int i = 0; i < cellWidth; i++) {
+      int pixel = (x + i) + (y + j) * width;  // 1D index into src.pixels
+      sum += brightness(src.pixels[pixel]);   // 0 (black) .. 255 (white)
+      count++;
+    }
+  }
+
+  // Return the mean brightness, avoid divide-by-zero
+  return sum / max(1, count);
+}
+
+// ---------- Convert brightness "level" into a cell stroke ----------
+void drawPattern(int col, int row, int value) {
+  int x = col * cellWidth;     // pixel-space x of this cell
+  int y = row * cellHeight;    // pixel-space y of this cell
+
+  // Decide how many sine cycles and amplitude based on "value"
+  // Darker cell → more cycles and larger amplitude
+  int cycles = (value < 8) ? 1 : value / 5;                       // 1..3-ish
+  float amplitude = constrain(value / 15.0, 0.0, 1.0);            // 0..1
+
+  drawSinewave(x, y, cycles, amplitude);
+}
+
+// ---------- Emit G-code for a sinewave inside a cell ----------
+void drawSinewave(int x, int y, int cycles, float amplitude) {
+  float startX = x;                    // top-left of cell
+  float startY = y;
+
+  // Scale amplitude to half cell height (center the wave vertically)
+  amplitude *= cellHeight / 2;
+
+  // Number of points along the wave (more cycles → more samples)
+  int samples = cycles * 12;
+
+  // Prepare increments for the sine function across the cell width
+  float angle = 0;
+  float deltaAngle = -TWO_PI / 12;     // negative gives a direction; tweakable
+  float deltaX = (float) cellWidth / samples;
+
+  // Precompute y offsets for the sine wave
+  float[] yValues = new float[samples + 1];
+  for (int i = 0; i < samples; i++) {
+    yValues[i] = sin(angle) * amplitude;
+    angle += deltaAngle;
+  }
+
+  // Draw the wave as short line segments, emitting G-code
+  for (int i = 0; i < samples - 1; i++) {
+    float x1 = startX + i * deltaX;
+    float y1 = startY + cellHeight / 2 + yValues[i];
+    float x2 = startX + (i + 1) * deltaX;
+    float y2 = startY + cellHeight / 2 + yValues[i + 1];
+
+    // Clip outside-canvas points (safety)
+    if (x1 < 0 || x1 > 220 || y1 < 0 || y1 > 220) continue;
+
+    // Flip Y so the plot isn’t upside-down on the bed (adjust if needed)
+    if (penUp) {
+      // Rapid move (pen up) to the first point of this segment
+      output.println("G00 X" + x1 + " Y" + (220 - y1));
+      penUp = false;
+    } else {
+      // Controlled (drawing) move to continue the stroke
+      output.println("G01 X" + x1 + " Y" + (220 - y1));
+    }
+    // Draw to the next point of the segment
+    output.println("G01 X" + x2 + " Y" + (220 - y2));
+  }
+
+  // Lift pen after finishing this cell’s wave (Z up).
+  // Adjust Z value to match your pen-lift height; F is feedrate (mm/min).
+  output.println("G00 Z0.5 F3000");
+  penUp = true;  // Next move will be a rapid (non-drawing) move
+}
